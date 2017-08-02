@@ -201,7 +201,7 @@ class VerticalPackageTile(Gtk.Button):
         super(Gtk.Button, self).__init__()
 
         label_name = Gtk.Label(xalign=0.5)
-        label_name.set_markup("<b>%s</b>" % package.name)
+        label_name.set_markup("<b>%s</b>" % self.get_simple_name(package.name))
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         vbox.set_border_width(6)
 
@@ -217,6 +217,13 @@ class VerticalPackageTile(Gtk.Button):
         vbox.pack_start(name_box, True, True, 0)
 
         self.add(vbox)
+        
+    
+    def get_simple_name(self, package_name):
+        package_name = package_name.split(":")[0]
+        if package_name in ALIASES and ALIASES[package_name]:
+            package_name = ALIASES[package_name]
+        return package_name.capitalize()
 
 class ReviewTile(Gtk.ListBoxRow):
     def __init__(self, username, date, comment, rating):
@@ -365,9 +372,11 @@ class CategoryListBoxRow(Gtk.ListBoxRow):
 
 class Application():
 
-    PAGE_LANDING = 0
-    PAGE_LIST = 1
-    PAGE_PACKAGE = 2
+    PAGE_LANDING =   0
+    PAGE_LIST =      1
+    PAGE_PACKAGE =   2
+    PAGE_ONGOING =   3
+    PAGE_INSTALLED = 4
 
     FONT = "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
 
@@ -442,6 +451,7 @@ class Application():
         prefs_menuitem.set_submenu(prefs_menu)
 
         search_summary_menuitem = Gtk.CheckMenuItem(_("Search in packages summary (slower search)"))
+        search_summary_menuitem.set_active(self.prefs["search_in_summary"])
         search_summary_menuitem.set_active(self.prefs["search_in_summary"])
         search_summary_menuitem.connect("toggled", self.set_search_filter, "search_in_summary")
 
@@ -864,6 +874,12 @@ class Application():
         else:
             self.featured_category.matchingPackages = self.file_to_array("/usr/share/linuxmint/mintinstall/categories/featured.list")
 
+        # INSTALLED
+        category = Category(_("Installed"), None, self.categories)
+        category.matchingPackages = package.pkg.is_installed
+        
+        self.root_categories[category.name] = category
+
         # INTERNET
         category = Category(_("Internet"), None, self.categories)
 
@@ -1137,6 +1153,22 @@ class Application():
         if self.previous_page == self.PAGE_LIST:
             self.previous_page = self.PAGE_LANDING
         self.searchentry.set_text("")
+
+    @print_timing
+    def show_installed(self, installed):
+
+        self.notebook.set_current_page(self.PAGE_INSTALLED)
+        self.previous_page = self.PAGE_LANDING
+        self.back_button.set_sensitive(True)
+
+        self.searchentry.set_text("")
+
+        if category.parent == None:
+            self.clear_category_list()
+            self.show_subcategories(category)
+
+        self.show_packages(installed.packages)
+
 
     @print_timing
     def show_category(self, category):
