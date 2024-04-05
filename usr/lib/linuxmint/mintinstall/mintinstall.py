@@ -599,15 +599,15 @@ class SaneProgressBar(Gtk.DrawingArea):
 
 
 class BannerTile(Gtk.FlowBoxChild):
-    def __init__(self, pkginfo, installer, name, is_flatpak, show_verified, app_json, on_clicked_action):
+    def __init__(self, pkginfo, installer, name, background, color, is_flatpak, show_verified, app_json, on_clicked_action):
         super(Gtk.FlowBoxChild, self).__init__()
 
         self.pkginfo = pkginfo
         self.installer = installer
+        self.background = background
+        self.color = color
 
         image_uri = (f"/usr/share/linuxmint/mintinstall/featured/{name}.svg")
-        background = app_json["background"]
-        color = app_json["text_color"]
 
         css = """
 #BannerTile {
@@ -637,21 +637,26 @@ class BannerTile(Gtk.FlowBoxChild):
         self.set_name("BannerTile")
         style_provider = Gtk.CssProvider()
         style_provider.load_from_data(str.encode(css))
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(),
-                                                 style_provider,
-                                                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
+        """ Have to re-use .add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION) for every widget because
+        add_provider doesn't cascade to children, and cant set the whole screen context for multiple tiles 
+        without making them uniform """
+        self.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        
         label_name = Gtk.Label(xalign=0)
         label_name.set_label(self.installer.get_display_name(pkginfo))
         label_name.set_name("BannerTitle")
+        label_name.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         label_summary = Gtk.Label(xalign=0)
         label_summary.set_label(self.installer.get_summary(pkginfo))
         label_summary.set_name("BannerSummary")
+        label_summary.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         image = Gtk.Image.new_from_file(image_uri)
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.START)
+        vbox.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         vbox.set_border_width(6)
 
         vbox.pack_start(label_name, False, False, 0)
@@ -659,9 +664,11 @@ class BannerTile(Gtk.FlowBoxChild):
 
         if is_flatpak:
             box_flatpak = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            box_flatpak.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             box_flatpak.pack_start(Gtk.Image.new_from_icon_name("mintinstall-package-flatpak-symbolic", Gtk.IconSize.MENU), False, False, 0)
             label_flatpak = Gtk.Label(label="Flathub")
             label_flatpak.set_name("BannerFlatpakLabel")
+            label_flatpak.get_style_context().add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             box_flatpak.pack_start(label_flatpak, False, False, 0)
             if show_verified:
                 box_flatpak.pack_start(Gtk.Image.new_from_icon_name("mintinstall-verified-symbolic", Gtk.IconSize.MENU), False, False, 0)
@@ -1364,6 +1371,7 @@ class Application(Gtk.Application):
             print("Loading error: %s" % e)
             GLib.idle_add(self.refresh_cache)
 
+    @print_timing
     def load_banner(self):
         box = self.builder.get_object("box_banner")
 
@@ -1378,52 +1386,120 @@ class Application(Gtk.Application):
         for child in box.get_children():
             child.destroy()
 
-        flowbox = Gtk.FlowBox()
-        flowbox.set_min_children_per_line(1)
-        flowbox.set_max_children_per_line(1)
-        flowbox.set_row_spacing(0)
-        flowbox.set_column_spacing(0)
-        flowbox.set_homogeneous(True)
+        stack = Gtk.Stack()
+        stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        stack.set_transition_duration(500)
 
-        flowbox.connect("child-activated", self.on_flowbox_child_activated, self.PAGE_LANDING)
+        arrow_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        left_arrow = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.SMALL_TOOLBAR)
+        right_arrow = Gtk.Button.new_from_icon_name("go-next-symbolic", Gtk.IconSize.SMALL_TOOLBAR)
+        left_arrow.set_size_request(20, 20)  # Adjust the size of the left arrow button
+        right_arrow.set_size_request(20, 20)  # Adjust the size of the right arrow button
 
+        dot_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        dot_box.set_halign(Gtk.Align.CENTER)
+
+        left_arrow.connect("clicked", self.on_arrow_clicked, stack, dot_box, -1)
+        right_arrow.connect("clicked", self.on_arrow_clicked, stack, dot_box, 1)
+        
         json_array = json.load(open("/usr/share/linuxmint/mintinstall/featured/featured.json", "r"))
+        random.shuffle(json_array)
+        
+        selected_apps = set()
+        num_selected = 0
 
-        tries = 0
-        pkginfo = None
-        is_flatpak = False
-
-        while True:
-            app_json = random.sample(json_array, 1)[0]
-            name = app_json["name"]
-            if name.startswith("flatpak:"):
-                name = name.replace("flatpak:", "")
-                pkginfo = self.installer.find_pkginfo(name, installer.PKG_TYPE_FLATPAK)
-                is_flatpak = True
-            else:
-                pkginfo = self.installer.find_pkginfo(name, installer.PKG_TYPE_APT)
-                is_flatpak = False
-
-            if pkginfo is not None:
-                if self.installer.pkginfo_is_installed(pkginfo) and tries < 10:
-                    tries += 1
-                    continue
+        for app_json in json_array:
+            if num_selected >= 5:
                 break
+
+            name = app_json["name"]
+            background = app_json["background"]
+            color = app_json["text_color"]
+
+            if name in selected_apps:
+                continue
+
+            is_flatpak = name.startswith("flatpak:")
+            if is_flatpak:
+                name = name.replace("flatpak:", "")
+                pkg_type = installer.PKG_TYPE_FLATPAK
             else:
-                tries += 1
+                pkg_type = installer.PKG_TYPE_APT
 
-            if tries > 10:
-                print("Error while loading the banner.")
-                box.hide()
-                return
+            pkginfo = self.installer.find_pkginfo(name, pkg_type)
+            if pkginfo is None or self.installer.pkginfo_is_installed(pkginfo):
+                continue
 
-        show_verified = is_flatpak and self.flatpak_is_verified(pkginfo)
+            selected_apps.add(name)
+            num_selected += 1
 
-        tile = BannerTile(pkginfo, self.installer, name, is_flatpak, show_verified, app_json, self.on_banner_clicked)
-        self.banner_app_name = pkginfo.name
-        flowbox.insert(tile, -1)
-        box.pack_start(flowbox, True, True, 0)
+            show_verified = is_flatpak and self.flatpak_is_verified(pkginfo)
+
+            flowbox = Gtk.FlowBox()
+            flowbox.set_min_children_per_line(1)
+            flowbox.set_max_children_per_line(1)
+            flowbox.set_row_spacing(0)
+            flowbox.set_column_spacing(0)
+            flowbox.set_homogeneous(True)
+            flowbox.connect("child-activated", self.on_flowbox_child_activated, self.PAGE_LANDING)
+
+            tile = BannerTile(pkginfo, self.installer, name, background, color, is_flatpak, show_verified, app_json, self.on_banner_clicked)
+            flowbox.insert(tile, -1)
+
+            stack.add_named(flowbox, str(len(stack.get_children())))
+
+            dot_button = Gtk.Button()
+            dot_button.set_relief(Gtk.ReliefStyle.NONE)
+            dot_button.set_size_request(10, 10)  # Adjust the size of the dot buttons
+            dot_button.set_image(Gtk.Image.new_from_icon_name("media-record-symbolic", Gtk.IconSize.MENU))
+            dot_button.connect("clicked", self.on_dot_clicked, stack, len(stack.get_children()) - 1)
+            dot_box.pack_start(dot_button, False, False, 0)
+        
+        arrow_box.pack_start(left_arrow, False, False, 0)
+        arrow_box.pack_start(stack, True, True, 0)
+        arrow_box.pack_start(right_arrow, False, False, 0)
+
+        box.pack_start(arrow_box, True, True, 0)
+        box.pack_start(dot_box, False, False, 5)
+
+        self.update_dot_buttons(dot_box, 0)
+
+        self.slideshow_timeout_id = GLib.timeout_add_seconds(5, self.on_slideshow_timeout, stack, dot_box)
+
         box.show_all()
+
+    def on_arrow_clicked(self, button, stack, dot_box, increment):
+        self.reset_slideshow_timer(stack, dot_box)
+        visible_child = stack.get_visible_child()
+        index = stack.get_children().index(visible_child)
+        new_index = (index + increment) % len(stack.get_children())
+        stack.set_visible_child_name(str(new_index))
+        dot_box = stack.get_parent().get_parent().get_children()[-1]  # Get the dot_box from the parent of the arrow_box
+        self.update_dot_buttons(dot_box, new_index)
+
+    def on_dot_clicked(self, button, stack, index):
+        self.reset_slideshow_timer(stack, button.get_parent())
+        stack.set_visible_child_name(str(index))
+        self.update_dot_buttons(button.get_parent(), index)
+
+    def reset_slideshow_timer(self, stack, dot_box):
+        GLib.source_remove(self.slideshow_timeout_id)
+        self.slideshow_timeout_id = GLib.timeout_add_seconds(5, self.on_slideshow_timeout, stack, dot_box)
+
+    def on_slideshow_timeout(self, stack, dot_box):
+        visible_child = stack.get_visible_child()
+        index = stack.get_children().index(visible_child)
+        new_index = (index + 1) % len(stack.get_children())
+        stack.set_visible_child_name(str(new_index))
+        self.update_dot_buttons(dot_box, new_index)
+        return True
+
+    def update_dot_buttons(self, dot_box, current_index):
+        for i, button in enumerate(dot_box.get_children()):
+            if i == current_index:
+                button.set_image(Gtk.Image.new_from_icon_name("media-record-symbolic", Gtk.IconSize.DND))
+            else:
+                button.set_image(Gtk.Image.new_from_icon_name("media-record-symbolic", Gtk.IconSize.MENU))
 
     def on_banner_clicked(self, button, pkginfo):
         self.show_package(pkginfo, self.PAGE_LANDING)
